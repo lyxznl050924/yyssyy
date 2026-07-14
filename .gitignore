@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+generated/
+custom_templates.json
