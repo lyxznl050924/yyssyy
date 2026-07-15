@@ -221,25 +221,35 @@ def git_auto_sync(commit_msg="自动同步更新"):
     try:
         project_dir = str(Path(__file__).parent)
 
-        # 第一步：拉取远程最新代码（避免 push 被拒绝）
-        try:
-            subprocess.run(
-                ["git", "pull", "--rebase", "origin", "main"],
-                cwd=project_dir, capture_output=True, text=True, timeout=30
-            )
-        except Exception:
-            pass  # pull 失败不阻塞，继续尝试 push
+        # 第一步：fetch 远程最新代码
+        subprocess.run(
+            ["git", "fetch", "origin", "main"],
+            cwd=project_dir, capture_output=True, text=True, timeout=30
+        )
 
-        # 第二步：添加所有变更
+        # 第二步：rebase 到远程最新（将本地提交放到远程提交之后）
+        rebase_result = subprocess.run(
+            ["git", "rebase", "origin/main"],
+            cwd=project_dir, capture_output=True, text=True, timeout=30
+        )
+        if rebase_result.returncode != 0:
+            # rebase 失败（可能是冲突），放弃并回到原始状态
+            subprocess.run(
+                ["git", "rebase", "--abort"],
+                cwd=project_dir, capture_output=True, text=True
+            )
+            return False, f"合并冲突，请手动解决: {rebase_result.stderr[:200]}"
+
+        # 第三步：添加所有变更
         subprocess.run(["git", "add", "."], cwd=project_dir, capture_output=True, text=True)
 
-        # 第三步：提交
+        # 第四步：提交
         result = subprocess.run(
             ["git", "commit", "-m", commit_msg],
             cwd=project_dir, capture_output=True, text=True
         )
         if "nothing to commit" not in result.stdout and "nothing to commit" not in result.stderr:
-            # 第四步：推送
+            # 第五步：推送
             push_result = subprocess.run(
                 ["git", "push", "origin", "main"],
                 cwd=project_dir, capture_output=True, text=True, timeout=30
@@ -247,8 +257,24 @@ def git_auto_sync(commit_msg="自动同步更新"):
             if push_result.returncode == 0:
                 return True, "推送成功"
             else:
-                error_msg = push_result.stderr[:200]
-                return False, f"推送失败: {error_msg}"
+                # 如果仍然被拒绝（可能是rebase期间远程又更新了），再试一次
+                if "rejected" in push_result.stderr or "fetch first" in push_result.stderr:
+                    subprocess.run(
+                        ["git", "fetch", "origin", "main"],
+                        cwd=project_dir, capture_output=True, text=True, timeout=30
+                    )
+                    subprocess.run(
+                        ["git", "rebase", "origin/main"],
+                        cwd=project_dir, capture_output=True, text=True, timeout=30
+                    )
+                    push_result2 = subprocess.run(
+                        ["git", "push", "origin", "main"],
+                        cwd=project_dir, capture_output=True, text=True, timeout=30
+                    )
+                    if push_result2.returncode == 0:
+                        return True, "推送成功（重试）"
+                    return False, f"推送失败: {push_result2.stderr[:200]}"
+                return False, f"推送失败: {push_result.stderr[:200]}"
         else:
             return True, "无变更，跳过推送"
     except subprocess.TimeoutExpired:
