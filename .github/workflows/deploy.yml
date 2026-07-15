@@ -1,0 +1,112 @@
+name: 🚀 CI/CD - 自动部署到 Streamlit Cloud
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "new_AI_partner.py"
+      - "requirements.txt"
+      - "public/**"
+      - ".streamlit/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+    inputs:
+      deploy_note:
+        description: "部署备注"
+        required: false
+        default: "手动触发部署"
+
+jobs:
+  # ============================================================
+  # Job 1: 代码质量检查
+  # ============================================================
+  quality:
+    name: 🔍 代码检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --quiet
+
+      - name: ✅ 语法检查
+        run: python -m py_compile new_AI_partner.py
+
+      - name: 🔎 导入检查
+        run: python -c "import ast; ast.parse(open('new_AI_partner.py', encoding='utf-8').read()); print('AST 解析通过')"
+
+  # ============================================================
+  # Job 2: 构建与版本标记
+  # ============================================================
+  build:
+    name: 📦 构建 & 版本标记
+    needs: quality
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🏷️ 生成版本号
+        id: version
+        run: |
+          VERSION="v$(date +'%Y.%m.%d')-build${{ github.run_number }}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "📌 版本号: $VERSION"
+
+      - name: 📝 写入版本文件
+        run: |
+          echo '{"version":"${{ steps.version.outputs.VERSION }}","build":"${{ github.run_number }}","time":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")","commit":"${{ github.sha }}"}' > public/version.json
+
+      - name: 💾 提交版本文件
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/version.json
+          git diff --staged --quiet || git commit -m "🔖 ${{ steps.version.outputs.VERSION }}"
+          git push
+
+  # ============================================================
+  # Job 3: 部署通知
+  # ============================================================
+  deploy:
+    name: 🚀 部署
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 📋 部署摘要
+        run: |
+          echo "============================================"
+          echo "  🚀 部署信息"
+          echo "============================================"
+          echo "  版本:     ${{ needs.build.outputs.version }}"
+          echo "  提交:     ${{ github.sha }}"
+          echo "  触发者:   ${{ github.actor }}"
+          echo "  提交信息: ${{ github.event.head_commit.message }}"
+          echo "============================================"
+          echo ""
+          echo "  📱 Streamlit Cloud 将自动检测 main 分支变更"
+          echo "  🔗 应用地址: https://yyssyy.streamlit.app"
+          echo "  ⏱️  预计 2-5 分钟内完成部署"
+          echo "============================================"
+
+      - name: 📢 部署通知
+        if: success()
+        run: |
+          echo "✅ 部署触发成功！"
+          echo "Streamlit Cloud 正在自动拉取最新代码..."
+          echo "版本: ${{ needs.build.outputs.version }}"

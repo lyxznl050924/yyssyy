@@ -1,0 +1,22 @@
+#!/bin/bash
+# ============================================================
+# Git Pre-Commit Hook —— 自动提交 + 推送
+# ============================================================
+# 安装方式：
+#   cp git-hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+# 或 Windows:
+#   copy git-hooks\pre-commit .git\hooks\pre-commit
+
+echo "🔍 检测文件变更..."
+
+# 检查是否有 .py 文件变更
+CHANGED=$(git diff --cached --name-only | grep "\.py$" || true)
+
+if [ -n "$CHANGED" ]; then
+    echo "📝 检测到 Python 文件变更: $CHANGED"
+    python -m py_compile new_AI_partner.py 2>/dev/null && echo "✅ 语法检查通过" || echo "⚠️ 语法检查未通过（继续提交）"
+fi
+
+echo "✅ Pre-commit 检查完成"
+exit 0

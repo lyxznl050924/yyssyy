@@ -1,0 +1,1 @@
+self.addEventListener("install",e=>{e.waitUntil(self.skipWaiting())});self.addEventListener("activate",e=>{e.waitUntil(self.clients.claim().then(()=>{self.clients.matchAll({type:"window"}).then(c=>{c.forEach(x=>x.postMessage({type:"UPDATE_AVAILABLE"}))})}))});self.addEventListener("fetch",e=>{e.respondWith(caches.match(e.request).then(c=>c||fetch(e.request)))});

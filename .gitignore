@@ -4,3 +4,5 @@ __pycache__/
 .env
 generated/
 custom_templates.json
+sessions.json
+update_log.json
