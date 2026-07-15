@@ -149,7 +149,7 @@ if _version_file.exists():
         pass
 
 pwa_html = pwa_html.replace("STREAMLIT_VERSION_PLACEHOLDER", _current_app_version)
-st.components.v1.html(pwa_html, height=0)
+st.html(pwa_html)
 
 # ============================================================
 # 伴侣模板 & 会话持久化
@@ -240,6 +240,46 @@ def git_auto_sync(commit_msg="自动同步更新"):
     except Exception as e:
         return False, f"Git同步失败: {str(e)[:200]}"
 
+def git_pull():
+    """从 GitHub 拉取最新代码更新"""
+    try:
+        project_dir = str(Path(__file__).parent)
+        # 先 fetch，获取远程最新信息
+        fetch_result = subprocess.run(
+            ["git", "fetch", "origin", "main"],
+            cwd=project_dir, capture_output=True, text=True, timeout=15
+        )
+        if fetch_result.returncode != 0:
+            return False, f"Fetch失败: {fetch_result.stderr[:200]}"
+
+        # 检查本地是否落后于远程
+        behind_result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            cwd=project_dir, capture_output=True, text=True, timeout=10
+        )
+        behind_count = 0
+        try:
+            behind_count = int(behind_result.stdout.strip())
+        except ValueError:
+            pass
+
+        if behind_count == 0:
+            return True, "已是最新版本，无需更新"
+
+        # 有更新，执行 pull
+        pull_result = subprocess.run(
+            ["git", "pull", "origin", "main"],
+            cwd=project_dir, capture_output=True, text=True, timeout=30
+        )
+        if pull_result.returncode == 0:
+            return True, f"拉取成功，更新了 {behind_count} 个提交"
+        else:
+            return False, f"拉取失败: {pull_result.stderr[:200]}"
+    except subprocess.TimeoutExpired:
+        return False, "拉取超时，请检查网络"
+    except Exception as e:
+        return False, f"Git拉取失败: {str(e)[:200]}"
+
 def auto_sync_if_enabled(action_desc=""):
     """如果用户开启了实时自动推送，则在操作后自动同步到GitHub"""
     if st.session_state.get("auto_sync_enabled", False):
@@ -250,26 +290,51 @@ def auto_sync_if_enabled(action_desc=""):
         return success, msg
     return True, "自动同步未开启"
 
+def _apply_template_change(current, selected, all_templates):
+    """应用模板切换 — 昵称、性格、背景故事均从模板定义中读取"""
+    if selected == "🌟 新建自定义":
+        current["template"] = "🌟 新建自定义"
+        current["nick_name"] = ""
+        current["nature"] = ""
+        current["background"] = ""
+    else:
+        tpl = all_templates.get(selected, BUILTIN_TEMPLATES["🌸 小甜甜"])
+        current["template"] = selected
+        current["nick_name"] = tpl.get("nick_name", selected)
+        current["nature"] = tpl.get("nature", "")
+        current["background"] = tpl.get("background", "")
+    save_sessions(st.session_state.sessions)
+
 BUILTIN_TEMPLATES = {
     "🌸 小甜甜": {
+        "nick_name": "小甜甜",
         "nature": "活泼开朗的东北姑娘，热情直爽，喜欢用'咱'、'老妹儿'等东北话，说话带感叹号",
-        "desc": "阳光开朗的东北甜心"
+        "desc": "阳光开朗的东北甜心",
+        "background": "从小在东北长大，性格豪爽，喜欢吃烧烤和火锅，梦想是开一家属于自己的甜品店"
     },
     "💎 冷艳御姐": {
+        "nick_name": "冷艳",
         "nature": "高冷傲娇的御姐，话少但字字珠玑，偶尔流露出温柔，用'哼'、'哦'等语气词",
-        "desc": "冰山美人，外冷内热"
+        "desc": "冰山美人，外冷内热",
+        "background": "跨国公司高管，工作能力强，习惯独来独往，不轻易对人敞开心扉"
     },
     "🍬 温柔学妹": {
+        "nick_name": "学妹",
         "nature": "温柔体贴的学妹，说话轻声细语，喜欢用'学长/学姐'称呼，带波浪号~",
-        "desc": "软萌治愈系学妹"
+        "desc": "软萌治愈系学妹",
+        "background": "大学二年级学生，主修文学，喜欢在图书馆看书，梦想成为作家"
     },
     "☕ 知心姐姐": {
+        "nick_name": "知心姐",
         "nature": "成熟稳重的知心姐姐，温柔但有边界，善于倾听和给建议，说话像散文一样优美",
-        "desc": "温暖治愈的心灵港湾"
+        "desc": "温暖治愈的心灵港湾",
+        "background": "心理咨询师出身，阅人无数，总能一眼看穿你的心事，但不点破"
     },
     "🔥 毒舌女友": {
+        "nick_name": "毒舌酱",
         "nature": "刀子嘴豆腐心的女友，嘴上不饶人但心里很在乎，喜欢吐槽但行动上很关心",
-        "desc": "嘴毒心软的傲娇女友"
+        "desc": "嘴毒心软的傲娇女友",
+        "background": "从小就是学霸，习惯用犀利的方式表达关心，其实内心非常柔软"
     },
 }
 
@@ -428,6 +493,25 @@ if "model_name" not in st.session_state:
     st.session_state.model_name = "llama-3.3-70b-versatile"
 
 current = st.session_state.sessions[st.session_state.current_session_id]
+
+# ============================================================
+# 启动时自动从 GitHub 拉取最新代码（仅执行一次）
+# ============================================================
+if "auto_pull_enabled" not in st.session_state:
+    st.session_state.auto_pull_enabled = False
+
+if "auto_pull_done" not in st.session_state:
+    st.session_state.auto_pull_done = False
+
+if st.session_state.auto_pull_enabled and not st.session_state.auto_pull_done:
+    st.session_state.auto_pull_done = True
+    success, msg = git_pull()
+    if "已是最新" not in msg:
+        st.toast(f"📥 {msg}", icon="📥")
+        st.warning("⚠️ 代码已更新，请刷新页面以加载最新版本")
+    # 记录日志
+    if success:
+        record_update("启动自动拉取", msg)
 
 # ============================================================
 # 工具函数
@@ -644,19 +728,8 @@ with st.sidebar:
             "选择伴侣", template_names, index=tpl_idx, label_visibility="collapsed"
         )
         if selected and selected != current.get("template"):
-            if selected == "🌟 新建自定义":
-                current["template"] = "🌟 新建自定义"
-                current["nick_name"] = ""
-                current["nature"] = ""
-                save_sessions(st.session_state.sessions)
-                st.rerun()
-            else:
-                tpl = all_templates[selected]
-                current["template"] = selected
-                current["nick_name"] = selected.split(" ", 1)[1] if " " in selected else selected
-                current["nature"] = tpl["nature"]
-                save_sessions(st.session_state.sessions)
-                st.rerun()
+            _apply_template_change(current, selected, all_templates)
+            st.rerun()
 
         current_tpl = all_templates.get(current["template"], all_templates["🌸 小甜甜"])
         st.caption(f"*{current_tpl['desc']}*")
@@ -667,12 +740,8 @@ with st.sidebar:
             if st.button("🎲 随机切换", use_container_width=True, key="random_switch"):
                 available = [k for k in template_names if k != "🌟 新建自定义"]
                 if available:
-                    chosen = random.choice(available)
-                    tpl = all_templates[chosen]
-                    current["template"] = chosen
-                    current["nick_name"] = chosen.split(" ", 1)[1] if " " in chosen else chosen
-                    current["nature"] = tpl["nature"]
-                    save_sessions(st.session_state.sessions)
+                    picked = random.choice(available)
+                    _apply_template_change(current, picked, all_templates)
                     st.rerun()
         with rand_col2:
             if st.button("🔄 刷新", use_container_width=True, key="refresh_tpl"):
@@ -698,8 +767,10 @@ with st.sidebar:
                         if is_custom and current["template"] != save_name and current["template"] in custom_templates:
                             del custom_templates[current["template"]]
                         custom_templates[save_name.strip()] = {
+                            "nick_name": current.get("nick_name", "").strip(),
                             "nature": current["nature"].strip(),
-                            "desc": f"自定义: {current.get('nick_name', '').strip() if current.get('nick_name') else save_name.strip()}"
+                            "desc": f"自定义: {current.get('nick_name', '').strip() if current.get('nick_name') else save_name.strip()}",
+                            "background": current.get("background", "").strip()
                         }
                         save_custom_templates(custom_templates)
                         current["template"] = save_name.strip()
@@ -719,8 +790,10 @@ with st.sidebar:
                         del custom_templates[current["template"]]
                         save_custom_templates(custom_templates)
                     current["template"] = "🌸 小甜甜"
-                    current["nick_name"] = "小甜甜"
-                    current["nature"] = BUILTIN_TEMPLATES["🌸 小甜甜"]["nature"]
+                    fallback = BUILTIN_TEMPLATES["🌸 小甜甜"]
+                    current["nick_name"] = fallback.get("nick_name", "小甜甜")
+                    current["nature"] = fallback["nature"]
+                    current["background"] = fallback.get("background", "")
                     save_sessions(st.session_state.sessions)
                     record_update("删除模板", f"模板名称: {old_name}")
                     auto_sync_if_enabled(f"删除模板: {old_name}")
@@ -735,11 +808,13 @@ with st.sidebar:
     if st.button("➕ 新建会话", use_container_width=True):
         new_id = str(uuid.uuid4())[:8]
         dt = "🌸 小甜甜"
+        tpl = BUILTIN_TEMPLATES[dt]
         st.session_state.sessions[new_id] = {
             "name": f"新会话 {len(st.session_state.sessions) + 1}",
             "template": dt,
-            "nick_name": "小甜甜",
-            "nature": BUILTIN_TEMPLATES[dt]["nature"],
+            "nick_name": tpl.get("nick_name", "小甜甜"),
+            "nature": tpl["nature"],
+            "background": tpl.get("background", ""),
             "mode": "伴侣",
             "messages": [],
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -799,10 +874,14 @@ with st.sidebar:
     if st.button("🗑️ 清空所有会话", use_container_width=True):
         first_id = str(uuid.uuid4())[:8]
         dt = "🌸 小甜甜"
+        tpl = BUILTIN_TEMPLATES[dt]
         st.session_state.sessions = {
             first_id: {
-                "name": "默认会话", "template": dt, "nick_name": "小甜甜",
-                "nature": BUILTIN_TEMPLATES[dt]["nature"], "mode": "伴侣",
+                "name": "默认会话", "template": dt,
+                "nick_name": tpl.get("nick_name", "小甜甜"),
+                "nature": tpl["nature"],
+                "background": tpl.get("background", ""),
+                "mode": "伴侣",
                 "messages": [], "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
             }
         }
@@ -831,6 +910,23 @@ with st.sidebar:
         else:
             st.info("ℹ️ 实时自动推送已关闭，可手动推送")
 
+    # 自动拉取开关
+    if "auto_pull_enabled" not in st.session_state:
+        st.session_state.auto_pull_enabled = False
+
+    auto_pull = st.toggle(
+        "📥 启动时自动拉取更新",
+        value=st.session_state.auto_pull_enabled,
+        key="auto_pull_toggle",
+        help="开启后，每次打开应用时自动从GitHub拉取最新代码"
+    )
+    if auto_pull != st.session_state.auto_pull_enabled:
+        st.session_state.auto_pull_enabled = auto_pull
+        if auto_pull:
+            st.success("✅ 启动时自动拉取已开启，每次打开应用将自动更新")
+        else:
+            st.info("ℹ️ 启动时自动拉取已关闭，可手动拉取")
+
     git_col1, git_col2 = st.columns(2)
     with git_col1:
         if st.button("📤 手动推送", use_container_width=True, key="git_push"):
@@ -843,6 +939,21 @@ with st.sidebar:
                 st.error(f"❌ {msg}")
 
     with git_col2:
+        if st.button("📥 拉取更新", use_container_width=True, key="git_pull_btn"):
+            with st.spinner("正在从 GitHub 拉取最新代码..."):
+                success, msg = git_pull()
+            if success:
+                record_update("GitHub拉取", msg)
+                if "已是最新" in msg:
+                    st.info(f"ℹ️ {msg}")
+                else:
+                    st.success(f"✅ {msg}")
+                    st.warning("⚠️ 代码已更新，请刷新页面以加载最新版本")
+            else:
+                st.error(f"❌ {msg}")
+
+    git_col3, git_col4 = st.columns(2)
+    with git_col3:
         if st.button("📋 更新日志", use_container_width=True, key="show_update_log"):
             st.session_state["show_update_log"] = True
 
@@ -891,116 +1002,206 @@ with st.sidebar:
     st.divider()
 
 # ============================================================
-# 主区域
+# 主区域 —— 伴侣预览 + 聊天展示
 # ============================================================
+# 布局：左侧侧边栏(25%) = 配置中心，右侧(75%) = 只读预览 + 聊天
+# 数据流：侧边栏编辑器 → session_state → 主区域只读预览
+# ┌─────────────────────────────────────────────────┐
+# │ 侧边栏(配置)          │ 主区域(展示)            │
+# │  🎭 模板选择          │  🤖 伴侣预览卡片(只读)  │
+# │  ✏️ 昵称/性格编辑     │  💬 聊天消息            │
+# │  💬 会话管理          │  📥 chat_input          │
+# │  🚀 GitHub同步        │                         │
+# └─────────────────────────────────────────────────┘
+
 is_coder = (current.get("mode") == "编程")
 
-col_left, col_main, col_right = st.columns([1, 3, 1])
+# ============================================================
+# 顶部：伴侣信息卡片（可编辑 + 自动保存 + 防抖）
+# ============================================================
+# 数据流（React useState / Vue Pinia 等价模式）：
+#   st.session_state.sessions[id] 是 Single Source of Truth
+#   ┌─────────────────────────────────────────────────┐
+#   │ 侧边栏下拉切换模板 → 写入 session_state        │
+#   │     ↓ st.rerun() 自动重渲染                    │
+#   │ 右侧卡片从 session_state 读取最新值（预填充）  │
+#   │     ↓ 用户编辑输入框 / textarea                │
+#   │ 失焦/Enter → 写入 session_state → save_sessions│
+#   │     ↓ 自动重渲染 → 侧边栏模板列表实时同步      │
+#   └─────────────────────────────────────────────────┘
+#
+# 【防抖说明】
+# Streamlit 原生 text_input/text_area 仅在失焦或 Ctrl+Enter 时触发
+# rerun，天然等效于 500-800ms 防抖。用户打字期间不会触发保存，
+# 停止输入并点击外部区域 → 自动保存 + "✅ 已自动保存" Toast。
 
-with col_main:
-    if is_coder:
-        st.title("💻 编程助手")
-        st.caption("写代码 · 项目构建 · 代码审查 · 技术问答")
-    else:
-        st.title(current["template"])
-        st.caption(
-            f"📋 {current['name']} | 💬 {len(current['messages'])} 条 | 🤖 {st.session_state.model_name}"
-        )
-
-        # ============================================================
-        # 【一体化伴侣编辑区】—— 双向同步 + 防抖自动保存
-        # ============================================================
-        # 架构设计（Streamlit 等价于 Zustand/Pinia 全局 Store）：
-        #   st.session_state.sessions[id] 是唯一数据源 (Single Source of Truth)
-        #   ┌─────────────────────────────────────────────────┐
-        #   │  侧边栏模板选择 → 更新 session_state           │
-        #   │       ↓ 自动重渲染                              │
-        #   │  Textarea 从 session_state 读取最新值           │
-        #   │       ↓ 用户编辑后失焦                          │
-        #   │  on_change 回调 → 解析内容 → 更新 session_state │
-        #   │       ↓ 自动重渲染                              │
-        #   │  侧边栏 compact 信息从 session_state 读取       │
-        #   └─────────────────────────────────────────────────┘
-        #
-        # 【防抖说明】
-        # Streamlit 的 st.text_area 原生行为：仅在用户失焦（点击外部区域）
-        # 或按 Ctrl+Enter 时才触发 rerun。这天然等效于 debounce。
-        # 下方的自定义组件通过 JS 实现了真正的 600ms 输入防抖。
-
-        # 构建 textarea 的默认值 —— 格式化显示伴侣完整信息
-        nick = current.get("nick_name", "小甜甜")
-        nature = current.get("nature", "")
-        default_textarea_value = f"【昵称】{nick}\n【性格】{nature}"
-
-        # 使用 session_state 追踪 textarea 值，实现类防抖
-        ta_key = f"partner_editor_{st.session_state.current_session_id}"
-        if ta_key not in st.session_state:
-            st.session_state[ta_key] = default_textarea_value
-
-        # 检测模板切换 → 同步更新 textarea
-        if st.session_state.get("_last_template") != current.get("template"):
-            st.session_state[ta_key] = default_textarea_value
-            st.session_state["_last_template"] = current.get("template")
-
-        st.markdown("**✏️ 伴侣信息编辑区**（直接编辑下方内容，失焦后自动保存）")
-
-        new_text = st.text_area(
-            "伴侣信息",
-            value=st.session_state[ta_key],
-            height=120,
-            key=f"partner_ta_{st.session_state.current_session_id}",
-            label_visibility="collapsed",
-            placeholder="【昵称】小甜甜\n【性格】活泼开朗的东北姑娘...",
-            help="格式：【昵称】xxx\n【性格】xxx\n修改后点击外部区域或按 Ctrl+Enter 自动保存"
-        )
-
-        # 检测 textarea 变化 → 解析并更新 state
-        if new_text != st.session_state.get(ta_key, ""):
-            st.session_state[ta_key] = new_text
-            # 解析 textarea 内容
-            parsed_nick = nick
-            parsed_nature = nature
-            for line in new_text.split("\n"):
-                line = line.strip()
-                if line.startswith("【昵称】") or line.startswith("[昵称]"):
-                    parsed_nick = line.replace("【昵称】", "").replace("[昵称]", "").strip()
-                elif line.startswith("【性格】") or line.startswith("[性格]"):
-                    parsed_nature = line.replace("【性格】", "").replace("[性格]", "").strip()
-            if parsed_nick:
-                current["nick_name"] = parsed_nick
-            if parsed_nature:
-                current["nature"] = parsed_nature
-            save_sessions(st.session_state.sessions)
-            # 保存状态指示
-            st.session_state["_save_status"] = "saved"
-            st.session_state["_save_time"] = datetime.now().strftime("%H:%M:%S")
-
-        # 防抖自动保存的视觉反馈
-        save_status = st.session_state.get("_save_status", "")
-        if save_status == "saved":
-            save_time = st.session_state.get("_save_time", "")
-            st.success(f"✅ 已自动保存 ({save_time})")
-            st.session_state["_save_status"] = "idle"
-        elif save_status == "saving":
-            st.info("⏳ 保存中...")
-
-        # 侧边栏伴侣信息 compact 视图（替代原来的读卡）
-        st.divider()
-
-with col_right:
+if not is_coder:
     with st.container(border=True):
-        if is_coder:
-            st.markdown("### 💻 编程助手")
-            st.caption("全栈开发 · 项目构建")
-            st.markdown(f"**模型:** {st.session_state.model_name}")
-        else:
-            tpl = get_all_templates().get(current["template"], BUILTIN_TEMPLATES["🌸 小甜甜"])
+        st.markdown("""
+        <style>
+        section[data-testid="stSidebar"] {
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        tpl = get_all_templates().get(current["template"], BUILTIN_TEMPLATES["🌸 小甜甜"])
+
+        # --- 头像 + 模板名称 ---
+        avatar_map = {
+            "🌸": "🌸", "💎": "💎", "🍬": "🍬", "☕": "☕",
+            "🎮": "🎮", "📚": "📚", "🎤": "🎤", "🌙": "🌙",
+            "🐱": "🐱", "🦊": "🦊", "🐰": "🐰", "🐶": "🐶",
+            "🌟": "✨", "💻": "💻"
+        }
+        avatar_emoji = "🤖"
+        for key, emoji in avatar_map.items():
+            if current["template"].startswith(key):
+                avatar_emoji = emoji
+                break
+
+        col_avatar, col_title = st.columns([1, 5])
+        with col_avatar:
+            st.markdown(f"""
+            <div style="width:60px;height:60px;border-radius:50%;
+            background:linear-gradient(135deg,#667eea,#764ba2);
+            display:flex;align-items:center;justify-content:center;
+            font-size:30px;margin-top:10px;">{avatar_emoji}</div>
+            """, unsafe_allow_html=True)
+        with col_title:
             st.markdown(f"### {current['template']}")
             st.caption(tpl["desc"])
-            st.markdown(f"**昵称:** {current.get('nick_name', '')}")
-            st.markdown(f"**性格:** {current.get('nature', '')[:60]}{'...' if len(current.get('nature', '')) > 60 else ''}")
-            st.markdown(f"**消息:** {len(current.get('messages', []))} 条")
-            st.caption(f"🕐 {current.get('created_at', '')}")
+
+        st.divider()
+
+        # ================================================================
+        # 【handleInputChange】—— 检测字段变化 → 自动写入 state
+        # ================================================================
+        st.caption("💬 **昵称**")
+        card_nick = st.text_input(
+            "昵称",
+            value=current.get("nick_name", ""),
+            key=f"card_nick_{st.session_state.current_session_id}_{current['template']}",
+            label_visibility="collapsed",
+            placeholder="给伴侣起个昵称..."
+        )
+
+        st.caption("📝 **性格描述**")
+        card_nature = st.text_area(
+            "性格描述",
+            value=current.get("nature", ""),
+            height=100,
+            key=f"card_nature_{st.session_state.current_session_id}_{current['template']}",
+            label_visibility="collapsed",
+            placeholder="描述伴侣的性格特点...",
+            help="修改后点击外部区域或按 Ctrl+Enter 自动保存"
+        )
+
+        st.caption("🌅 **背景故事**")
+        card_background = st.text_area(
+            "背景故事",
+            value=current.get("background", ""),
+            height=80,
+            key=f"card_background_{st.session_state.current_session_id}_{current['template']}",
+            label_visibility="collapsed",
+            placeholder="伴侣的过往经历、背景设定...",
+            help="选填，丰富角色设定"
+        )
+
+        # ================================================================
+        # 【debounceSave】—— 失焦自动保存（等效 500ms 防抖）
+        # ================================================================
+        changed = False
+        if card_nick != current.get("nick_name", ""):
+            current["nick_name"] = card_nick.strip()
+            changed = True
+        if card_nature != current.get("nature", ""):
+            current["nature"] = card_nature.strip()
+            changed = True
+        if card_background != current.get("background", ""):
+            current["background"] = card_background.strip()
+            changed = True
+
+        if changed:
+            save_sessions(st.session_state.sessions)
+            st.toast(f"✅ 已自动保存 ({datetime.now().strftime('%H:%M:%S')})", icon="✅")
+
+        st.divider()
+
+        # ============================================================
+        # 模板保存/删除（带重复名称检查）
+        # ============================================================
+        is_custom = current["template"] not in BUILTIN_TEMPLATES and current["template"] != "🌟 新建自定义"
+        is_new = current["template"] == "🌟 新建自定义"
+
+        if is_custom or is_new:
+            st.caption("💾 **保存为模板**")
+            save_col1, save_col2 = st.columns([3, 1])
+            with save_col1:
+                save_name = st.text_input(
+                    "模板名称",
+                    value=current["template"] if is_custom else "",
+                    placeholder="起个名字保存...",
+                    key=f"card_save_name_{st.session_state.current_session_id}_{current['template']}",
+                    label_visibility="collapsed"
+                )
+            with save_col2:
+                if st.button("💾", use_container_width=True, key=f"card_save_btn_{st.session_state.current_session_id}_{current['template']}",
+                             help="保存当前设置为新模板"):
+                    name = save_name.strip()
+                    if not name:
+                        st.error("请输入模板名称")
+                    elif not current.get("nature", "").strip():
+                        st.error("请先填写性格描述")
+                    else:
+                        custom_templates = load_custom_templates()
+                        # 重复名称检查（防错处理）
+                        if name in custom_templates and name != current["template"]:
+                            st.error(f"模板 '{name}' 已存在，请换一个名称")
+                        elif name in BUILTIN_TEMPLATES:
+                            st.error(f"'{name}' 是内置模板，不能覆盖")
+                        else:
+                            if is_custom and current["template"] != name and current["template"] in custom_templates:
+                                del custom_templates[current["template"]]
+                            custom_templates[name] = {
+                                "nick_name": current.get("nick_name", "").strip(),
+                                "nature": current["nature"].strip(),
+                                "desc": f"自定义: {current.get('nick_name', name).strip()}",
+                                "background": current.get("background", "").strip()
+                            }
+                            save_custom_templates(custom_templates)
+                            current["template"] = name
+                            save_sessions(st.session_state.sessions)
+                            record_update("保存模板", f"模板名称: {name}")
+                            auto_sync_if_enabled(f"保存模板: {name}")
+                            st.success(f"✅ 模板 '{name}' 已保存！")
+                            st.rerun()
+
+            if is_custom:
+                if st.button("🗑️ 删除此模板", use_container_width=True, key=f"card_del_btn_{st.session_state.current_session_id}_{current['template']}"):
+                    custom_templates = load_custom_templates()
+                    old_name = current["template"]
+                    if old_name in custom_templates:
+                        del custom_templates[old_name]
+                        save_custom_templates(custom_templates)
+                    current["template"] = "🌸 小甜甜"
+                    fallback = BUILTIN_TEMPLATES["🌸 小甜甜"]
+                    current["nick_name"] = fallback.get("nick_name", "小甜甜")
+                    current["nature"] = fallback["nature"]
+                    current["background"] = fallback.get("background", "")
+                    save_sessions(st.session_state.sessions)
+                    record_update("删除模板", f"模板名称: {old_name}")
+                    auto_sync_if_enabled(f"删除模板: {old_name}")
+                    st.warning("模板已删除")
+                    st.rerun()
+
+        # --- 底部统计 ---
+        st.caption(f"📋 **消息数:** {len(current.get('messages', []))} 条  |  🕐 {current.get('created_at', '')}")
+
+    st.divider()
+else:
+    st.title("💻 编程助手")
+    st.caption("写代码 · 项目构建 · 代码审查 · 技术问答")
 
 # ============================================================
 # 聊天区域
