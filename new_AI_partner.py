@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import base64
 import time
+import threading
 from pathlib import Path
 from openai import OpenAI
 from datetime import datetime
@@ -289,6 +290,77 @@ def auto_sync_if_enabled(action_desc=""):
             record_update("自动GitHub推送", f"{action_desc} → {msg}")
         return success, msg
     return True, "自动同步未开启"
+
+# ============================================================
+# 后台文件监控自动推送（守护线程）
+# ============================================================
+_WATCHER_RUNNING = False
+_WATCHER_LOCK = threading.Lock()
+
+def _start_auto_push_watcher():
+    """启动后台守护线程，每30秒检测一次代码文件变更，自动 git add + commit + push"""
+    global _WATCHER_RUNNING
+    with _WATCHER_LOCK:
+        if _WATCHER_RUNNING:
+            return
+        _WATCHER_RUNNING = True
+
+    def _watcher_loop():
+        project_dir = str(Path(__file__).parent)
+        # 忽略的文件模式
+        ignore_patterns = [
+            "sessions.json", "custom_templates.json",
+            "update_log.json", ".streamlit/",
+            "__pycache__/", "*.pyc"
+        ]
+        while _WATCHER_RUNNING:
+            try:
+                # 检查是否有未提交的代码变更
+                result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=project_dir, capture_output=True, text=True, timeout=10
+                )
+                changed_files = result.stdout.strip()
+                if changed_files:
+                    # 过滤掉数据文件，只看代码变更
+                    code_lines = []
+                    for line in changed_files.split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # 跳过被忽略的文件
+                        skip = False
+                        for pat in ignore_patterns:
+                            if pat.replace("*", "") in line:
+                                skip = True
+                                break
+                        if not skip:
+                            code_lines.append(line)
+
+                    if code_lines:
+                        # 有代码变更，自动推送
+                        commit_msg = f"自动推送代码变更: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        success, msg = git_auto_sync(commit_msg)
+                        if success:
+                            print(f"[AutoPush] ✅ {msg} | 变更文件: {len(code_lines)}")
+                        else:
+                            print(f"[AutoPush] ❌ {msg}")
+            except Exception as e:
+                print(f"[AutoPush] ⚠️ 监控异常: {e}")
+            # 每30秒检查一次
+            for _ in range(30):
+                if not _WATCHER_RUNNING:
+                    break
+                time.sleep(1)
+
+    thread = threading.Thread(target=_watcher_loop, daemon=True, name="AutoPushWatcher")
+    thread.start()
+
+def _stop_auto_push_watcher():
+    """停止后台自动推送监控线程"""
+    global _WATCHER_RUNNING
+    with _WATCHER_LOCK:
+        _WATCHER_RUNNING = False
 
 def _apply_template_change(current, selected, all_templates):
     """应用模板切换 — 昵称、性格、背景故事均从模板定义中读取"""
@@ -909,6 +981,25 @@ with st.sidebar:
             st.success("✅ 实时自动推送已开启，每次操作后将自动同步到GitHub")
         else:
             st.info("ℹ️ 实时自动推送已关闭，可手动推送")
+
+    # 文件监控自动推送开关
+    if "auto_watch_enabled" not in st.session_state:
+        st.session_state.auto_watch_enabled = False
+
+    auto_watch = st.toggle(
+        "👁️ 监控代码文件变更自动推送",
+        value=st.session_state.auto_watch_enabled,
+        key="auto_watch_toggle",
+        help="开启后，后台守护线程每30秒检测一次代码文件（.py/.js/.css等）变更，发现变更后自动 git add + commit + push 到GitHub"
+    )
+    if auto_watch != st.session_state.auto_watch_enabled:
+        st.session_state.auto_watch_enabled = auto_watch
+        if auto_watch:
+            _start_auto_push_watcher()
+            st.success("✅ 代码监控已启动，每30秒检测一次变更并自动推送")
+        else:
+            _stop_auto_push_watcher()
+            st.info("ℹ️ 代码监控已关闭")
 
     # 自动拉取开关
     if "auto_pull_enabled" not in st.session_state:
