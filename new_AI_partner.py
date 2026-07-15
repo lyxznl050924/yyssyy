@@ -404,7 +404,16 @@ def _stop_auto_push_watcher():
         _WATCHER_RUNNING = False
 
 def _apply_template_change(current, selected, all_templates):
-    """应用模板切换 — 昵称、性格、背景故事均从模板定义中读取"""
+    """应用模板切换 — 昵称、性格、背景故事均从模板定义中读取，对话历史按模板独立保存"""
+    old_template = current.get("template", "")
+
+    # 保存旧模板的对话历史（切换前先存档）
+    if "template_messages" not in current:
+        current["template_messages"] = {}
+    if old_template and current.get("messages"):
+        current["template_messages"][old_template] = current["messages"]
+
+    # 应用新模板的昵称、性格、背景故事
     if selected == "🌟 新建自定义":
         current["template"] = "🌟 新建自定义"
         current["nick_name"] = ""
@@ -416,6 +425,11 @@ def _apply_template_change(current, selected, all_templates):
         current["nick_name"] = tpl.get("nick_name", selected)
         current["nature"] = tpl.get("nature", "")
         current["background"] = tpl.get("background", "")
+
+    # 恢复该模板之前的对话历史（如果存在），否则从空开始
+    saved_messages = current.get("template_messages", {}).get(selected, [])
+    current["messages"] = saved_messages
+
     save_sessions(st.session_state.sessions)
 
 BUILTIN_TEMPLATES = {
