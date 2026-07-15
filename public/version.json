@@ -1,1 +1,1 @@
-{"version":"v1.0.0","build":"0","time":"2026-07-15T00:00:00Z","commit":"local"}
+{"version":"v2026.07.15-build1","build":"1","time":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")","commit":"bfc8e2f11f1703e83457f902b6560d32f98d5b5b"}
